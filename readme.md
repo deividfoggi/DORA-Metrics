@@ -8,7 +8,7 @@ Este documento é um guia técnico passo-a-passo para implementar as quatro mét
 - **Coleta**: Azure Functions com triggers timer (a cada 5 minutos)
 - **Autenticação**: GitHub App + Managed Identity do Azure
 - **Armazenamento**: Azure SQL Database
-- **Visualização**: Power BI (ou Grafana)
+- **Visualização**: Power BI
 
 **O que são DORA Metrics:**
 1. **Deployment Frequency** - Frequência de deployments em produção
