@@ -581,738 +581,126 @@ az functionapp function show \
 
 ---
 
-## PARTE 7: Configurar Power BI Dashboard (DETALHADO)
+## PARTE 7: Configurar Power BI Dashboard
 
-### Passo 7.1: Conecte Power BI ao SQL Database
+> **💡 Template Pronto para Usar**: Um arquivo Power BI Desktop (.pbix) pré-configurado está disponível em `powerbi/DORA-Metrics-Template.pbix` com todos os modelos de dados, medidas DAX e visualizações já criados. 
+> 
+> **Salve seu próprio**: Após criar o dashboard completo, salve o arquivo `.pbix` no diretório `powerbi/` para que outros possam usá-lo. Veja instruções em `powerbi/PLACE_PBIX_FILE_HERE.md`.
 
-1. Abra **Power BI Desktop**
-2. **Home** → **Get Data** → **Azure** → **Azure SQL Database**
-3. Preencha a conexão:
-   - **Server**: `sql-dora-metrics-yourname.database.windows.net`
-   - **Database**: `sqldb-dora-metrics`
+### Passo 7.1: Use o Template Power BI
+
+1. **Abra o arquivo template**:
+   ```
+   powerbi/DORA-Metrics-Template.pbix
+   ```
+
+2. **Abra no Power BI Desktop**
+   - Clique duas vezes no arquivo `.pbix` ou
+   - Abra Power BI Desktop → **File** → **Open** → Selecione o arquivo
+
+### Passo 7.2: Atualize a Conexão com seu Database
+
+1. **Home** → **Transform data** → **Data source settings**
+
+2. Clique em **Change Source...**
+
+3. Atualize os valores:
+   - **Server**: `${SQL_SERVER_NAME}.database.windows.net`
+   - **Database**: `${SQL_DATABASE}`
+   
 4. Clique **OK**
-5. Em **Authentication**, selecione:
-   - **Microsoft account** (para usar Entra ID)
-   - Clique **Sign in** e autentique
-6. Clique **Connect**
-7. Na janela **Navigator**, selecione as tabelas:
-   - ☑ `deployments`
-   - ☑ `pull_requests`
-   - ☑ `incidents`
-   - ☑ `repositories`
-8. Clique **Load** (não Transform por enquanto)
 
-### Passo 7.2: Configure o Modelo de Dados
+5. **Edit Permissions** → **Credentials**:
+   - Selecione **Microsoft account**
+   - Clique **Sign in** e autentique com sua conta Azure com permissão de acesso ao SQL
+   - Clique **Save**
 
-#### A. Crie Relacionamento entre Pull Requests e Deployments
+### Passo 7.3: Atualize os Dados
 
-1. Vá para **Model View** (ícone de tabelas à esquerda)
-2. Crie o relacionamento principal:
+1. Na faixa de aviso amarela no topo, clique **Refresh now**
 
-**Pull Requests → Deployments**
-- Arraste `pull_requests[merge_commit_sha]` para `deployments[commit_sha]`
-- **Cardinality**: Many to One (*:1)
-- **Cross filter direction**: Both
-- **Make this relationship active**: ✓
+2. Ou clique **Home** → **Refresh**
 
-Este é o relacionamento essencial para calcular o **Lead Time for Changes**.
+3. Aguarde o carregamento dos dados (pode levar 30-60 segundos)
 
-**Nota**: O relacionamento Deployments ↔ Incidents é time-based (janela de 24h), então será feito via tabela calculada DAX.
+### Passo 7.4: Verifique os Dados
 
-### Passo 7.3: Crie Tabela de Relacionamento Deployment-Incident
+1. Navegue pelas 4 páginas do dashboard:
+   - **Deployment Frequency** - Visualize deployments por tempo/repositório
+   - **Lead Time for Changes** - Análise de tempo entre commit e produção
+   - **Change Failure Rate** - Taxa de deployments com incidents
+   - **Time to Restore** - MTTR e tempos de recuperação
 
-Para correlacionar deployments com incidents (janela de 24h), crie uma tabela calculada:
+2. Verifique se os dados aparecem corretamente nos visuais
 
-**Modeling** → **New Table**
+3. Teste os filtros (Date Range, Repository, Environment)
 
-```dax
-DeploymentIncidents = 
-VAR ProductionDeployments = 
-    SELECTCOLUMNS(
-        FILTER(deployments, deployments[environment] = "production"),
-        "deployment_id", deployments[id],
-        "deployment_created_at", deployments[created_at],
-        "deployment_repository", deployments[repository],
-        "deployment_environment", deployments[environment],
-        "deployment_commit_sha", deployments[commit_sha]
-    )
-VAR ClosedIncidents = 
-    SELECTCOLUMNS(
-        FILTER(incidents, NOT(ISBLANK(incidents[closed_at]))),
-        "incident_id", incidents[id],
-        "incident_issue_number", incidents[issue_number],
-        "incident_created_at", incidents[created_at],
-        "incident_closed_at", incidents[closed_at],
-        "incident_repository", incidents[repository],
-        "product", incidents[product],
-        "incident_url", incidents[url],
-        "incident_title", incidents[title]
-    )
-RETURN
-FILTER(
-    ADDCOLUMNS(
-        CROSSJOIN(ProductionDeployments, ClosedIncidents),
-        "detection_lag_hours", 
-            DATEDIFF([deployment_created_at], [incident_created_at], HOUR),
-        "traditional_mttr_hours", 
-            DATEDIFF([incident_created_at], [incident_closed_at], HOUR),
-        "deployment_mttr_hours", 
-            DATEDIFF([deployment_created_at], [incident_closed_at], HOUR)
-    ),
-    [deployment_repository] = [incident_repository] &&
-    [incident_created_at] >= [deployment_created_at] &&
-    [detection_lag_hours] <= 24 &&
-    [traditional_mttr_hours] >= 0
-)
-```
-
-### Passo 7.4: Crie a Coluna Calculada Lead Time
-
-Antes de criar medidas, adicione uma coluna calculada na tabela `deployments`:
-
-**Clique na tabela `deployments`** → **Modeling** → **New Column**
-
-```dax
-Lead Time (Hours) = 
-VAR PRCreatedTime = 
-    CALCULATE(
-        MAX(pull_requests[created_at]),
-        FILTER(
-            pull_requests,
-            pull_requests[merge_commit_sha] = deployments[commit_sha]
-        )
-    )
-RETURN
-    IF(
-        NOT ISBLANK(PRCreatedTime) && deployments[status] = "SUCCESS",
-        DIVIDE(
-            DATEDIFF(PRCreatedTime, deployments[created_at], MINUTE),
-            60,
-            BLANK()
-        ),
-        BLANK()
-    )
-```
-
-Esta coluna calcula o lead time para cada deployment individualmente.
-
-### Passo 7.5: Crie Todas as Medidas DAX
-
-Crie uma pasta de medidas: **Home** → **Enter Data** → Nome: "_Measures" (tabela vazia)
-
-**Modeling** → **New Measure** (dentro da tabela `_Measures`)
-
-#### Medidas - DEPLOYMENT FREQUENCY
-
-```dax
-Total Deployments = 
-COUNTROWS(deployments)
-```
-
-```dax
-Total Incidents = 
-COUNTROWS(incidents)
-```
-
-#### Medidas - LEAD TIME FOR CHANGES
-
-```dax
-Median Lead Time (Hours) = 
-PERCENTILE.INC(
-    deployments[Lead Time (Hours)],
-    0.5
-)
-```
-
-```dax
-Average Lead Time (Hours) = 
-AVERAGE(deployments[Lead Time (Hours)])
-```
-
-```dax
-DORA Performance = 
-VAR MedianHours = [Median Lead Time (Hours)]
-RETURN
-    SWITCH(
-        TRUE(),
-        ISBLANK(MedianHours), "No Data",
-        MedianHours < 24, "🏆 Elite",
-        MedianHours < 168, "⭐ High",
-        MedianHours < 720, "📊 Medium",
-        "📉 Low"
-    )
-```
-
-#### Medidas - CHANGE FAILURE RATE
-
-```dax
-Deployments With Incidents = 
-VAR IncidentsWithDeployment = 
-    ADDCOLUMNS(
-        incidents,
-        "LinkedDeploymentID",
-        CALCULATE(
-            MAX(deployments[id]),
-            FILTER(
-                ALL(deployments),
-                deployments[repository] = incidents[repository]
-                && deployments[created_at] <= incidents[created_at]
-                && incidents[created_at] <= deployments[created_at] + 1
-            )
-        )
-    )
-VAR UniqueDeploymentsWithIncidents = 
-    DISTINCT(
-        SELECTCOLUMNS(
-            FILTER(
-                IncidentsWithDeployment,
-                NOT(ISBLANK([LinkedDeploymentID]))
-            ),
-            "DeploymentID", [LinkedDeploymentID]
-        )
-    )
-RETURN
-    COUNTROWS(UniqueDeploymentsWithIncidents)
-```
-
-```dax
-CFR % = 
-DIVIDE(
-    [Deployments With Incidents],
-    [Total Deployments],
-    0
-) * 100
-```
-
-```dax
-CFR Category = 
-VAR CFRValue = [CFR %]
-RETURN
-    SWITCH(
-        TRUE(),
-        ISBLANK(CFRValue), "No Data",
-        CFRValue <= 5, "Elite (0-5%)",
-        CFRValue <= 10, "High (5-10%)",
-        CFRValue <= 15, "Medium (10-15%)",
-        "Low (>15%)"
-    )
-```
-
-```dax
-CFR Color = 
-VAR CFRValue = [CFR %]
-RETURN
-    SWITCH(
-        TRUE(),
-        ISBLANK(CFRValue), "#CCCCCC",
-        CFRValue <= 5, "#28A745",      // Green - Elite
-        CFRValue <= 10, "#17A2B8",     // Blue - High
-        CFRValue <= 15, "#FFC107",     // Yellow - Medium
-        "#DC3545"                      // Red - Low
-    )
-```
-
-#### Medidas - TIME TO RESTORE SERVICE (MTTR)
-
-```dax
-Traditional MTTR - Mean (Hours) = 
-AVERAGEX(
-    FILTER(incidents, NOT(ISBLANK(incidents[closed_at]))),
-    DATEDIFF(incidents[created_at], incidents[closed_at], HOUR)
-)
-```
-
-```dax
-Traditional MTTR - Median (Hours) = 
-PERCENTILEX.INC(
-    FILTER(incidents, NOT(ISBLANK(incidents[closed_at]))),
-    DATEDIFF(incidents[created_at], incidents[closed_at], HOUR),
-    0.5
-)
-```
-
-```dax
-Deployment MTTR - Mean (Hours) = 
-AVERAGE(DeploymentIncidents[deployment_mttr_hours])
-```
-
-```dax
-Deployment MTTR - Median (Hours) = 
-PERCENTILEX.INC(
-    DeploymentIncidents,
-    [deployment_mttr_hours],
-    0.5
-)
-```
-
-```dax
-Detection Lag - Median (Hours) = 
-PERCENTILEX.INC(
-    DeploymentIncidents,
-    [detection_lag_hours],
-    0.5
-)
-```
-
-```dax
-Closed Incidents Count = 
-COUNTROWS(
-    FILTER(incidents, NOT(ISBLANK(incidents[closed_at])))
-)
-```
-
-```dax
-Deployments with Closed Incidents = 
-DISTINCTCOUNT(DeploymentIncidents[deployment_id])
-```
-
-```dax
-DORA Tier - Traditional MTTR = 
-VAR MedianMTTR = [Traditional MTTR - Median (Hours)]
-RETURN
-    SWITCH(
-        TRUE(),
-        ISBLANK(MedianMTTR), "No Data",
-        MedianMTTR < 1, "Elite",
-        MedianMTTR < 24, "High",
-        MedianMTTR < 168, "Medium",
-        "Low"
-    )
-```
-
-### Passo 7.6: Crie os Visuais - Página 1: Deployment Frequency
-
-#### Layout da Página:
-```
-+------------------+------------------+
-| Card 1           | Card 2           |
-| Total Deploy     | Total Incidents  |
-+------------------+------------------+
-| Line Chart: Deployments Over Time  |
-|                                     |
-+-------------------------------------+
-| Bar Chart: Deploy by Repo          |
-|                                     |
-+-------------------------------------+
-| Bar Chart: Deploy by Environment   |
-+-------------------------------------+
-```
-
-#### Visual 1: Card - Total Deployments
-
-1. **Insert** → **Card**
-2. Arraste para o campo **Fields**:
-   - `_Measures[Total Deployments]`
-3. **Format** → **Callout value**:
-   - **Font**: Segoe UI, Bold, 48pt
-   - **Color**: #1F2937
-4. **Format** → **Category label**:
-   - **Text**: "Total Deployments"
-   - **Font**: 14pt
-   - **Color**: #6B7280
-5. Posicione no canto superior esquerdo
-
-#### Visual 2: Card - Deployments Per Day
-
-1. **Insert** → **Card**
-2. **Fields**: `_Measures[Deployments Per Day]`
-3. **Format** → **Callout value**:
-   - Formato: Number, 2 decimals
-4. Posicione ao lado do Card 1
-
-#### Visual 3: Card - MoM Change %
-
-1. **Insert** → **Card**
-2. **Fields**: `_Measures[Deployments MoM Change %]`
-3. **Format** → **Callout value**:
-   - Formato: Percentage, 1 decimal
-   - Conditional formatting: Verde se >0, Vermelho se <0
-4. Posicione ao lado do Card 2
-
-#### Visual 4: Line Chart - Deployments Over Time
-
-1. **Insert** → **Line Chart**
-2. Configure campos:
-   - **X-axis**: `deployments[created_at]` (hierarquia: Year → Month → Day)
-   - **Y-axis**: `_Measures[Total Deployments]`
-   - **Legend**: `deployments[environment]`
-3. **Format** → **X-axis**:
-   - **Type**: Continuous
-   - **Title**: "Date"
-4. **Format** → **Y-axis**:
-   - **Title**: "Number of Deployments"
-5. **Format** → **Data colors**:
-   - production: #10B981 (verde)
-   - staging: #3B82F6 Total Incidents
-
-1. **Insert** → **Card**
-2. **Fields**: `_Measures[Total Incidents]`
-3. **Format** → **Callout value**:
-   - **Font**: Segoe UI, Bold, 48pt
-   - **Color**: #DC3545 (vermelho)
-4. **Format** → **Category label**:
-   - **Text**: "Total Incidents"
-5. Posicione ao lado do Card 1
-#### Visual 6: Bar Chart - Deployments by Environment
-
-1. **Insert** → **Clustered Column Chart**
-2. Configure:
-   - **X-axis**: `deployments[environment]`
-   - **Y-axis**: `_Measures[Total Deployments]`
-3. **Format** → **Data colors**: Mesmas cores do Line Chart
-4. **Format** → **Data labels**: On
-5. Posicione ao lado do Bar Chart (metade direita)
-
-#### Visual 7: Slicer - Date Range
-
-1. **Insert** → **Slicer**
-2. **Field**: `deployments[created_at]`
-3. **Slicer settings** → **Style**: Between
-4. Posicione no topo da página
-
-#### Visual 8: Slicer - Repository
-
-1. **Insert** → **Slicer**
-2. **Field**: `deployments[repository]`
-3. **Slicer settings** → **Style**: Dropdown
-4. **Selection**: Multi-select with Ctrl
-5. Posicione ao lado do Date Slicer
-
-### Passo 7.7: Crie os Visuais - Página 2: Lead Time for Changes
-
-#### Layout:
-```
-+------------------+------------------+------------------+
-| Card: Median LT  | Card: Average LT | Card: Performance|
-+------------------+------------------+------------------+
-| Line Chart: Lead Time Trend                           |
-|                                                        |
-+--------------------------------------------------------+
-| Scatter Plot: Lead Time Distribution                  |
-|                                                        |
-+--------------------------------------------------------+
-| Table: Top 10 Longest Lead Times                      |
-+--------------------------------------------------------+
-```
-
-#### Visual 1-3: Cards - Lead Time Metrics
-
-**Card 1: Median Lead Time**
-1. **Insert** → **Card**
-2. **Fields**: `_Measures[Median Lead Time (Hours)]`
-3. **Format** → **Callout value**: 2 decimals
-4. Adicione texto "Median Lead Time (Hours)"
-
-**Card 2: Average Lead Time**
-1. **Insert** → **Card**
-2. **Fields**: `_Measures[Average Lead Time (Hours)]`
-3. **Format**: Similar ao Card 1
-
-**Card 3: DORA Performance**
-1. **Insert** → **Card**
-2. **Fields**: `_Measures[DORA Performance]`
-3. **Format** → **Callout value**:
-   - Conditional formatting baseado no valor:
-     - Elite: Verde
-     - High: Azul
-     - Medium: Laranja
-     - Low: Vermelho
-
-#### Visual 4: Line Chart - Lead Time Trend
-
-1. **Insert** → **Line Chart**
-2. Configure:
-   - **X-axis**: `deployments[created_at]` (agregado por Month)
-   - **Y-axis**: `_Measures[Median Lead Time (Hours)]`
-   - **Secondary Y-axis**: `_Measures[Average Lead Time (Hours)]`
-3. **Format** → **Lines**:
-   - Median: Linha sólida
-   - Average: Linha pontilhada
-4. Adicione **Analytics** → **Constant line** no valor 1 (Elite threshold)
-
-#### Visual 5: Scatter Chart - Lead Time Distribution
-
-**Importante**: Este requer uma tabela de fato com lead times individuais.
-
-1. Primeiro, crie uma tabela calculada:
-
-```dax
-LeadTimeDetails = 
-1. **Insert** → **Scatter Chart**
-2. Configure:
-   - **X-axis**: `deployments[created_at]`
-   - **Y-axis**: `deployments[Lead Time (Hours)]`
-   - **Legend**: `deployments[repository]`
-   - **Size**: (deixe vazio ou use count)
-3. **Filters**: Adicione filtro para `deployments[Lead Time (Hours)]` is not blank
-
-#### Visual 6: Table - Top 10 Longest Lead Times
-
-1. **Insert** → **Table**
-2. Configure colunas:
-   - `deployments[repository]`
-   - `deployments[commit_sha]`
-   - `deployments[created_at]`
-   - `deployments[Lead Time (Hours)]`
-3. **Format** → **Values**:
-   - Lead Time: Conditional formatting (vermelho para >168h)
-4. **Filters**: Top 10 por Lead Time (Hours), Descending-----------------+
-| Card: CFR %      | Card: Category   | Card: Total      |
-|                  |                  | Deployments      |
-+------------------+------------------+------------------+
-| Card: Deploy     | Card: Total      |                  |
-| w/ Incidents     | Incidents        |                  |
-+------------------+------------------+------------------+
-| Line Chart: CFR Trend Over Time                       |
-|                                                        |
-+--------------------------------------------------------+
-| Bar Chart: CFR by Repository                          |
-+--------------------------------------------------------+
-| Table: Recent Incidents with Deployments              |
-+--------------------------------------------------------+
-```
-
-#### Visual 1-5: Cards - CFR Metrics
-
-**Card 1: CFR %**
-1. **Insert** → **Card**
-2. **Fields**: `_Measures[CFR %]`
-3. **Format** → **Callout value**:
-   - Formato: 2 decimals + "%"
-   - Conditional formatting baseado em `_Measures[CFR Color]`
-
-**Card 2: CFR Category**
-1. **Insert** → **Card**
-2. **Fields**: `_Measures[CFR Category]`
-
-**Card 3: Total Deployments**
-1. **Card** com `_Measures[Production Deployments]`
-
-**Card 4: Deployments with Incidents**
-1. **Card** com `_Measures[Deployments With Incidents]`
-
-**Card 5: Total Incidents**
-1. **Card** com `_Measures[Total Incidents]`
-
-#### Visual 6: Line Chart - CFR Trend
-
-1. **Insert** → **Line and Stacked Column Chart**
-2. Configure:
-   - **Shared axis**: `deployments[created_at]` (agregado por Month)
-   - **Column values**: `_Measures[Production Deployments]`
-   - **Line values**: `_Measures[CFR %]`
-3. **Format** → **Y-axis** (linha):
-   - **Title**: "CFR %"
-   - **Min**: 0, **Max**: 100
-4. **Format** → **Secondary Y-axis** (coluna):
-   - **Title**: "Deployments"
-5. Adicione **Constant line** em 15% (Elite threshold)
-
-#### Visual 7: Clustered Bar Chart - CFR by Repository
-
-1. **Insert** → **Clustered Bar Chart**
-2. Configure:
-   - **Y-axis**: `DeploymentIncidents[deployment_repository]`
-   - **X-axis (1)**: `_Measures[Production Deployments]`
-   - **X-axis (2)**: `_Measures[Deployments With Incidents]`
-3. **Format** → **Data colors**:
-   - Deployments: Azul clarTotal
-   - With Incidents: Vermelho
-4. **Format** → **Data labels**: On
-
-#### Visual 8: Table - Recent Incidents
-
-1. **Insert** → **Table**
-2. Configure colunas:Total
-   - `DeploymentIncidents[incident_issue_number]`
-   - `DeploymentIncidents[incident_title]`
-   - `DeploymentIncidents[product]`
-   - `DeploymentIncidents[deployment_repository]`
-   - `DeploymentIncidents[deployment_created_at]`
-   - `DeploymentIncidents[incident_created_at]`
-   - `DeploymentIncidents[detection_lag_hours]`
-3. **Format** → **Style**: Minimal
-4. **Filters** → **incident_created_at**: Last 30 days
-5. **Sort**: Por incident_created_at, Descending
-
-### Passo 7.9: Crie os Visuais - Página 4: Time to Recovery
-
-#### Layout:Total
-```
-+------------------+------------------+------------------+
-| Card: Trad MTTR  | Card: Deploy     | Card: Detection  |
-| Median           | MTTR Median      | Lag Median       |
-+------------------+------------------+------------------+
-| Card: Closed     | Card: DORA Tier  |                  |
-| Incidents        |                  |                  |
-+------------------+------------------+------------------+
-| Combo Chart: MTTR Comparison Over Time               |
-|                                                        |
-+--------------------------------------------------------+
-| Clustered Bar: MTTR by Product                        |
-|                                                        |
-+--------------------------------------------------------+
-| Table: Incident Details with Resolution Times         |
-+--------------------------------------------------------+
-```
-
-#### Visual 1-5: Cards - MTTR Metrics
-
-**Card 1: Traditional MTTR - Median**
-1. **Card** com `_Measures[Traditional MTTR - Median (Hours)]`
-2. **Format**: 2 decimals
-
-**Card 2: Deployment MTTR - Median**
-1. **Card** com `_Measures[Deployment MTTR - Median (Hours)]`
-
-**Card 3: Detection Lag - Median**
-1. **Card** com `_Measures[Detection Lag - Median (Hours)]`
-
-**Card 4: Closed Incidents Count**
-1. **Card** com `_Measures[Closed Incidents Count]`
-
-**Card 5: DORA Tier**
-1. **Card** com `_Measures[DORA Tier - Traditional MTTR]`
-2. Conditional formatting por tier
-
-#### Visual 6: Line Chart - MTTR Trends
-
-1. **Insert** → **Line Chart**
-2. Configure:
-   - **X-axis**: `incidents[created_at]` (agregado por Month)
-   - **Y-axis (múltiplas linhas)**:
-     - `_Measures[Traditional MTTR - Median (Hours)]`
-     - `_Measures[Deployment MTTR - Median (Hours)]`
-3. **Format** → **Lines**:
-   - Traditional: Azul claro (#3B82F6)
-   - Deployment: Azul escuro (#1E40AF)
-4. **Analytics** → **Constant lines**:
-   - 1 hora (Elite)
-   - 24 horas (High)
-
-#### Visual 7: Clustered Bar Chart - MTTR by Product
-
-1. **Insert** → **Clustered Bar Chart**
-2. Configure:
-   - **Y-axis**: `DeploymentIncidents[product]`
-   - **X-axis**: 
-     - `_Measures[Traditional MTTR - Median (Hours)]`
-     - `_Measures[Deployment MTTR - Median (Hours)]`
-3. **Format** → **Data labels**: On
-4. **Sort**: Por Traditional MTTR, Descending
-
-#### Visual 8: Table - Incident Details
-
-1. **Insert** → **Table**
-2. Configure colunas:
-   - `DeploymentIncidents[incident_issue_number]` (como link)
-   - `DeploymentIncidents[incident_title]`
-   - `DeploymentIncidents[deployment_repository]`
-   - `DeploymentIncidents[product]`
-   - `DeploymentIncidents[incident_created_at]`
-   - `DeploymentIncidents[incident_closed_at]`
-   - `DeploymentIncidents[traditional_mttr_hours]`
-   - `DeploymentIncidents[deployment_mttr_hours]`
-3. **Format** → **URL icon**: On para incident_url
-4. **Format** → **Conditional formatting** em MTTR:
-   - Verde: <1h
-   - Azul: 1-24h
-   - Laranja: 24-168h
-   - Vermelho: >168h
-
-### Passo 7.10: Configure Filtros Globais e Interações
-
-#### Adicione Slicers em Todas as Páginas:
-
-1. **Date Range Slicer**:
-   - **Insert** → **Slicer**
-   - **Field**: `deployments[created_at]`
-   - **Style**: Between
-   - **Sync slicers**: Ative para todas as páginas
-
-2. **Repository Slicer**:
-   - **Field**: `deployments[repository]`
-   - **Style**: Dropdown, Multi-select
-   - **Sync slicers**: Ative para todas as páginas
-
-3. **Environment Slicer**:
-   - **Field**: `deployments[environment]`
-   - **Style**: Checkbox
-   - **Default**: production (selecionado)
-
-#### Configure Interações entre Visuais:
-
-1. Vá para **Format** → **Edit interactions**
-2. Para cada página:
-   - Line charts: Filtram outros visuais
-   - Cards: Não filtram (desabilite interactions)
-   - Slicers: Filtram todos os visuais
-   - Tables: Highlight ao invés de filter
-
-### Passo 7.11: Aplique Tema Personalizado
-
-Crie ou use um tema JSON:
-
-```json
-{
-  "name": "DORA Metrics Theme",
-  "dataColors": [
-    "#10B981", "#3B82F6", "#F59E0B", "#EF4444", 
-    "#8B5CF6", "#14B8A6", "#F97316", "#EC4899"
-  ],
-  "background": "#FFFFFF",
-  "foreground": "#1F2937",
-  "tableAccent": "#3B82F6",
-  "good": "#10B981",
-  "neutral": "#F59E0B",
-  "bad": "#EF4444"
-}
-```
-
-**View** → **Themes** → **Browse for themes** → Selecione o JSON
-
-### Passo 7.12: Publique e Configure Refresh
+### Passo 7.5: Publique no Power BI Service
 
 1. **File** → **Publish** → **Publish to Power BI**
-2. Selecione seu workspace
-3. No Power BI Service:
-   - Navegue até o dataset
-   - **Settings** → **Data source credentials**
-   - Configure a autenticação (OAuth2)
-4. **Scheduled refresh**:
-   - **Refresh frequency**: Daily
-   - **Time**: 2 AM, 6 AM, 10 AM, 2 PM, 6 PM, 10 PM
-   - **Notify on failure**: ✓
-   - **Send failure notification to**: seu-email@company.com
 
-### Passo 7.13: Crie Alertas (Power BI Service)
+2. Selecione seu **Workspace** (ou crie um novo)
 
-1. Em cada Card importante, clique nos **⋯** → **Manage alerts**
-2. Configure alertas:
-   - **CFR > 30%**: Alerta vermelho
-   - **Deployments Per Day < 1**: Alerta amarelo
-   - **Median Lead Time > 168h**: Alerta laranja
-   - **MTTR > 24h**: Alerta vermelho
+3. Clique **Select**
 
-### Passo 7.14: Compartilhe o Dashboard
+4. Aguarde a publicação completar
 
-1. **File** → **Publish to web** (se público)
-2. Ou **Share** → Adicione usuários/grupos específicos
-3. Configure permissões:
-   - **Can reshare**: Apenas admins
-   - **Can build content**: Apenas editors
-   - **View only**: Todos os outros
+5. Clique **Open 'DORA-Metrics-Template.pbix' in Power BI**
 
 ---
 
-## Notas sobre Power BI
+## O que está incluído no Template
 
-### Otimização de Performance
+O arquivo `.pbix` já contém:
 
-- Use **DirectQuery** para dados ao vivo, **Import** para melhor performance
-- Remova colunas não utilizadas nas tabelas
-- Use agregações onde possível
-- Limite o histórico de dados (ex: últimos 2 anos)
+✓ **Modelo de dados** configurado:
+  - Relacionamentos entre `deployments`, `pull_requests`, `incidents`
+  - Tabela calculada `DeploymentIncidents` (janela 24h)
+  - Coluna calculada `Lead Time (Hours)`
+
+✓ **Medidas DAX** (28 medidas):
+  - Deployment Frequency metrics
+  - Lead Time metrics com performance tiers
+  - Change Failure Rate com categorização
+  - MTTR metrics (traditional + deployment-based)
+
+✓ **4 Páginas de Dashboard**:
+  - Cards, line charts, bar charts, tables
+  - Slicers sincronizados (Date, Repository, Environment)
+  - Formatação condicional e tema aplicado
+
+✓ **Tema personalizado** aplicado
+
+---
+
+## Personalizando o Dashboard
+
+Se quiser modificar o template:
+
+1. **Adicionar novos visuais**: **Insert** → Escolha o tipo de visual
+2. **Modificar medidas DAX**: **Modeling** → Clique na medida → Edite na barra de fórmulas
+3. **Alterar cores**: **Format** → **Data colors**
+4. **Adicionar páginas**: Clique **+** no rodapé
+5. **Ver instruções detalhadas**: Consulte `powerbi/README.md`
+
+---
+
+## Troubleshooting Power BI
+
+**Erro de autenticação ao conectar:**
+- Verifique se você tem permissões no SQL Database
+- Use **Microsoft account** (não SQL Server authentication)
+- Seu usuário Azure AD deve ter role `db_datareader` no database
+
+**Dados não aparecem após refresh:**
+- Verifique se as Azure Functions coletaram dados
+- Execute queries SQL para confirmar dados no database
+- Veja o histórico de refresh: Dataset → Settings → Refresh history
+
+**Performance lento:**
+- Limite o range de datas nos slicers
+- Considere usar DirectQuery ao invés de Import
+- Remova colunas não utilizadas das tabelas
 
 ---
 
