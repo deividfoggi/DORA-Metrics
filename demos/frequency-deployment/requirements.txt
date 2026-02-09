@@ -1,0 +1,6 @@
+azure-functions
+azure-identity
+pyodbc
+requests
+PyJWT[crypto]
+cryptography
