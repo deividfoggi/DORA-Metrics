@@ -290,7 +290,7 @@ sqlcmd -S ${SQL_SERVER_NAME}.database.windows.net \
 - `incidents` - GitHub Issues marcadas como incidents
 - `product` column adicionada à tabela `deployments`
 
-### Passo 3.4: Grant Permissions para o Function App
+### Passo 3.4: Conceder permissões para o Function App
 
 ```bash
 # No Azure Portal Query Editor ou via sqlcmd, execute:
@@ -563,22 +563,6 @@ WHERE d.environment = 'production'
 ORDER BY d.created_at DESC;
 ```
 
-### Passo 6.4: Force Trigger das Functions (teste manual)
-
-```bash
-# No Azure Portal:
-# 1. Vá para Function App → Functions
-# 2. Clique em "deployment_frequency_collector"
-# 3. Clique "Test/Run" → "Run"
-# 4. Veja os logs
-
-# Ou via Azure CLI (aguarda completar):
-az functionapp function show \
-  --name $FUNCTION_APP_NAME \
-  --resource-group $RESOURCE_GROUP \
-  --function-name deployment_frequency_collector
-```
-
 ---
 
 ## PARTE 7: Configurar Power BI Dashboard
@@ -748,21 +732,6 @@ LEFT JOIN sys.database_role_members drm ON dp.principal_id = drm.member_principa
 LEFT JOIN sys.database_principals r ON drm.role_principal_id = r.principal_id
 WHERE dp.name = 'func-dora-metrics-yourname';
 ```
-
-**3. GitHub API rate limit:**
-```bash
-# Verifique rate limit
-curl -H "Authorization: Bearer YOUR_TOKEN" \
-  https://api.github.com/rate_limit
-```
-
-### Alertas Recomendados
-
-Configure no Azure Monitor:
-- Function execution failures > 5 in 15 minutes
-- SQL Database DTU > 80%
-- Function execution time > 5 minutes
-
 ---
 
 ## PARTE 9: Time to Restore Service (MTTR)
@@ -784,33 +753,6 @@ Configure no Azure Monitor:
 3. Investigue e resolva o problema
 4. Feche a issue quando restaurado
 5. MTTR automaticamente calculado
-```
-
-### Queries Úteis
-
-```sql
--- MTTR por produto
-SELECT 
-    product,
-    COUNT(*) as total_incidents,
-    AVG(DATEDIFF(MINUTE, created_at, closed_at)) as avg_mttr_minutes,
-    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY DATEDIFF(MINUTE, created_at, closed_at)) 
-        OVER (PARTITION BY product) as median_mttr_minutes
-FROM incidents
-WHERE closed_at IS NOT NULL
-GROUP BY product;
-
--- Incidents ainda abertos
-SELECT 
-    repository,
-    issue_number,
-    title,
-    product,
-    created_at,
-    DATEDIFF(HOUR, created_at, GETUTCDATE()) as hours_open
-FROM incidents
-WHERE state = 'open'
-ORDER BY created_at;
 ```
 
 ---
@@ -853,32 +795,6 @@ Automaticamente incluídos se:
 2. Nenhuma mudança no código necessário
 3. Aparecerá automaticamente no Power BI
 
-### Escalar para Múltiplas Organizações
-
-```bash
-# Crie uma function por org, ou:
-# Configure variável com múltiplas orgs
-az functionapp config appsettings set \
-  --name $FUNCTION_APP_NAME \
-  --resource-group $RESOURCE_GROUP \
-  --settings "GITHUB_ORGS=org1,org2,org3"
-
-# Atualize o código para iterar pelas orgs
-```
-
-### Backup do Database
-
-```bash
-# Configure automated backups
-az sql db show \
-  --resource-group $RESOURCE_GROUP \
-  --server $SQL_SERVER_NAME \
-  --name $SQL_DATABASE \
-  --query earliestRestoreDate
-
-# Retention automático: 7 dias (Basic tier)
-```
-
 ---
 
 ## Benchmark DORA Levels
@@ -903,11 +819,3 @@ Use estas referências para avaliar sua performance:
 - **Azure Functions**: https://learn.microsoft.com/azure/azure-functions/
 
 ---
-
-## Suporte
-
-Para dúvidas ou problemas:
-1. Verifique os logs da function: `az webapp log tail`
-2. Revise as queries SQL de troubleshooting
-3. Consulte os READMEs específicos de cada métrica
-4. Abra uma issue neste repositório
