@@ -420,6 +420,13 @@ def collect_github_pull_requests(github_token: str) -> List[Dict[str, Any]]:
                 author {
                   login
                 }
+                commits(first: 1) {
+                  nodes {
+                    commit {
+                      authoredDate
+                    }
+                  }
+                }
               }
             }
           }
@@ -477,6 +484,11 @@ def collect_github_pull_requests(github_token: str) -> List[Dict[str, Any]]:
                 hours_ago = (datetime.now(timezone.utc) - merged_at).total_seconds() / 3600
                 
                 if hours_ago <= PR_LOOKBACK_HOURS:
+                    # Extract first commit authored date (canonical DORA T1)
+                    first_commit_date = None
+                    if pr.get("commits") and pr["commits"].get("nodes") and len(pr["commits"]["nodes"]) > 0:
+                        first_commit_date = pr["commits"]["nodes"][0]["commit"]["authoredDate"]
+                    
                     all_prs.append({
                         "pr_number": pr["number"],
                         "repository": f"{repo['owner']['login']}/{repo_name}",
@@ -485,9 +497,10 @@ def collect_github_pull_requests(github_token: str) -> List[Dict[str, Any]]:
                         "created_at": pr["createdAt"],
                         "merged_at": pr["mergedAt"],
                         "merge_commit_sha": pr["mergeCommit"]["oid"] if pr["mergeCommit"] else None,
-                        "base_branch": pr["baseRefName"]
+                        "base_branch": pr["baseRefName"],
+                        "first_commit_date": first_commit_date
                     })
-                    logging.debug(f"Added PR #{pr['number']} from {repo_name}, merged {hours_ago:.1f}h ago")
+                    logging.debug(f"Added PR #{pr['number']} from {repo_name}, merged {hours_ago:.1f}h ago, first_commit={first_commit_date}")
                 else:
                     logging.debug(f"Skipping PR #{pr['number']} - merged {hours_ago:.1f}h ago (outside {PR_LOOKBACK_HOURS}h window)")
         
@@ -984,10 +997,11 @@ def store_pull_requests(prs: List[Dict[str, Any]]) -> None:
                 merged_at = ?,
                 merge_commit_sha = ?,
                 base_branch = ?,
+                first_commit_date = ?,
                 collected_at = ?
         WHEN NOT MATCHED THEN
-            INSERT (pr_number, repository, title, author, created_at, merged_at, merge_commit_sha, base_branch, collected_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+            INSERT (pr_number, repository, title, author, created_at, merged_at, merge_commit_sha, base_branch, first_commit_date, collected_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
         
         inserted_count = 0
@@ -1004,6 +1018,7 @@ def store_pull_requests(prs: List[Dict[str, Any]]) -> None:
                     pr["merged_at"],
                     pr["merge_commit_sha"],
                     pr["base_branch"],
+                    pr.get("first_commit_date"),
                     datetime.now(timezone.utc).isoformat(),
                     # WHEN NOT MATCHED INSERT
                     pr["pr_number"],
@@ -1014,6 +1029,7 @@ def store_pull_requests(prs: List[Dict[str, Any]]) -> None:
                     pr["merged_at"],
                     pr["merge_commit_sha"],
                     pr["base_branch"],
+                    pr.get("first_commit_date"),
                     datetime.now(timezone.utc).isoformat()
                 )
                 inserted_count += 1
