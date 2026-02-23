@@ -15,7 +15,7 @@ GitHub Org ──► Azure Function App ──► Azure SQL Database ──► P
                (Timer: every 5min)    (Entra ID auth)        (DirectQuery)
                ├─ deployment_frequency_collector → deployments table
                ├─ lead_time_collector            → pull_requests table
-               └─ change_failure_rate_collector  → incidents table
+               └─ cfr_mttr_collector             → incidents table
 ```
 
 **O que são DORA Metrics:**

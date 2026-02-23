@@ -137,7 +137,7 @@ def lead_time_collector(timer: func.TimerRequest) -> None:
 
 @app.schedule(schedule="0 */5 * * * *", arg_name="timer", run_on_startup=False,
               use_monitor=False) 
-def change_failure_rate_time_to_recover(timer: func.TimerRequest) -> None:
+def cfr_mttr_collector(timer: func.TimerRequest) -> None:
     """
     Timer trigger function that runs every 5 minutes
     Collects incident data from GitHub Issues for Change Failure Rate calculation
@@ -1244,7 +1244,7 @@ def health_check(req: func.HttpRequest) -> func.HttpResponse:
     Health check endpoint
     """
     return func.HttpResponse(
-        '{"status": "healthy", "service": "deployment-frequency-collector"}',
+        '{"status": "healthy", "service": "dora-metrics-collector"}',
         status_code=200,
         mimetype="application/json"
     )
