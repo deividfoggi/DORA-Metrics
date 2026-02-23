@@ -10,15 +10,10 @@ Este documento é um guia técnico passo-a-passo para implementar as quatro mét
 - **Armazenamento**: Azure SQL Database
 - **Visualização**: Power BI
 
-```
-GitHub Org ──► Azure Function App ──► Azure SQL Database ──► PowerBI
-               (Timer: every 5min)    (Entra ID auth)        (DirectQuery)
-               ├─ deployment_frequency_collector → deployments table
-               ├─ lead_time_collector            → pull_requests table
-               └─ cfr_mttr_collector             → incidents table
-```
+![Arquitetura no Azure](image.png)
 
-**O que são DORA Metrics:**
+
+**O que são [DORA](https://dora.dev/guides/dora-metrics/) Metrics:**
 1. **Deployment Frequency** - Frequência de deployments em produção
 2. **Lead Time for Changes** - Tempo do commit até produção  
 3. **Change Failure Rate** - % de deployments que causam falhas
