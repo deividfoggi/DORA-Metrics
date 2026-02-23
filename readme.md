@@ -10,13 +10,19 @@ Este documento é um guia técnico passo-a-passo para implementar as quatro mét
 - **Armazenamento**: Azure SQL Database
 - **Visualização**: Power BI
 
+```
+GitHub Org ──► Azure Function App ──► Azure SQL Database ──► PowerBI
+               (Timer: every 5min)    (Entra ID auth)        (DirectQuery)
+               ├─ deployment_frequency_collector → deployments table
+               ├─ lead_time_collector            → pull_requests table
+               └─ change_failure_rate_collector  → incidents table
+```
+
 **O que são DORA Metrics:**
 1. **Deployment Frequency** - Frequência de deployments em produção
 2. **Lead Time for Changes** - Tempo do commit até produção  
 3. **Change Failure Rate** - % de deployments que causam falhas
 4. **Time to Restore Service** - Tempo médio de recuperação (MTTR)
-
-**Tempo estimado total:** 4-6 horas
 
 ---
 
@@ -236,64 +242,60 @@ az functionapp config appsettings set \
     "INCIDENT_LOOKBACK_HOURS=24"
 ```
 
+### Referência de Variáveis de Ambiente
+
+| Variável | Descrição | Default | Obrigatória |
+|----------|-----------|---------|-------------|
+| `GITHUB_ORG_NAME` | Nome da organização GitHub | - | Sim |
+| `GITHUB_APP_ID` | ID do GitHub App | - | Sim |
+| `GITHUB_APP_INSTALLATION_ID` | ID da instalação do GitHub App | - | Sim |
+| `GITHUB_APP_PRIVATE_KEY` | Chave privada do GitHub App (raw ou base64) | - | Sim |
+| `GITHUB_DEPLOYMENT_ENVIRONMENTS` | Filtro de environments (separados por vírgula) | (todos) | Não |
+| `BASE_BRANCH` | Branch a monitorar para PRs mergeados | `main` | Não |
+| `PR_LOOKBACK_HOURS` | Horas de lookback para PRs mergeados | `48` | Não |
+| `INCIDENT_LOOKBACK_HOURS` | Horas de lookback para incidents | `24` | Não |
+| `SQL_SERVER` | FQDN do SQL Server | - | Sim |
+| `SQL_DATABASE` | Nome do SQL Database | - | Sim |
+
 ---
 
 ## PARTE 3: Configurar Database Schemas
 
-### Passo 3.1: Deploy Schema de Deployment Frequency
+Todos os schemas estão consolidados em um único arquivo SQL.
+
+### Passo 3.1: Deploy Schema Unificado
 
 ```bash
-# Conecte ao database
+# Conecte ao database e execute o schema unificado
 sqlcmd -S ${SQL_SERVER_NAME}.database.windows.net \
   -d $SQL_DATABASE \
   -G \
-  -i demos/frequency-deployment/sql/schema.sql
+  -i function_app/sql/schema.sql
 
-# Ou use Azure Data Studio e execute o conteúdo de:
-# demos/frequency-deployment/sql/schema.sql
+# Ou use Azure Data Studio / Azure Portal Query Editor
+# e execute o conteúdo de: function_app/sql/schema.sql
 ```
 
-**Schema criado:**
+**Tabelas criadas:**
 - `deployments` - Deployments do GitHub
-- `deployment_metrics_daily` - Agregações diárias  
-- `repositories` - Metadados de repositórios
-
-### Passo 3.2: Deploy Schema de Lead Time
-
-```bash
-sqlcmd -S ${SQL_SERVER_NAME}.database.windows.net \
-  -d $SQL_DATABASE \
-  -G \
-  -i demos/lead_time_for_changes/sql/schema.sql
-```
-
-**Schema criado:**
+- `deployment_metrics_daily` - Agregações diárias
+- `repositories` - Metadados de repositórios (time, produto)
 - `pull_requests` - PRs mergeados com timestamps
-
-### Passo 3.3: Deploy Schema de Change Failure Rate
-
-```bash
-# Se já tiver deployments, rode a migração primeiro:
-sqlcmd -S ${SQL_SERVER_NAME}.database.windows.net \
-  -d $SQL_DATABASE \
-  -G \
-  -i demos/change_failure_rate/sql/migrate-add-product.sql
-
-# Agora crie a tabela de incidents
-sqlcmd -S ${SQL_SERVER_NAME}.database.windows.net \
-  -d $SQL_DATABASE \
-  -G \
-  -i demos/change_failure_rate/sql/schema.sql
-```
-
-**Schema criado:**
 - `incidents` - GitHub Issues marcadas como incidents
-- `product` column adicionada à tabela `deployments`
 
-### Passo 3.4: Conceder permissões para o Function App
+**Views criadas:**
+- `vw_cfr_analysis` - Deployments correlacionados com incidents (janela 24h)
+- `vw_lead_time_analysis` - PRs vinculados a deployments com cálculo de lead time
+
+### Passo 3.2: Conceder permissões para o Function App
 
 ```bash
-# No Azure Portal Query Editor ou via sqlcmd, execute:
+sqlcmd -S ${SQL_SERVER_NAME}.database.windows.net \
+  -d $SQL_DATABASE \
+  -G \
+  -i function_app/sql/grant-permissions.sql
+
+# Ou execute manualmente:
 sqlcmd -S ${SQL_SERVER_NAME}.database.windows.net \
   -d $SQL_DATABASE \
   -G \
@@ -302,6 +304,23 @@ sqlcmd -S ${SQL_SERVER_NAME}.database.windows.net \
       ALTER ROLE db_datareader ADD MEMBER [${FUNCTION_APP_NAME}];"
 ```
 
+### Passo 3.3: Verificar Deploy do Schema
+
+```bash
+sqlcmd -S ${SQL_SERVER_NAME}.database.windows.net \
+  -d $SQL_DATABASE \
+  -G \
+  -i function_app/sql/verify-collection.sql
+```
+
+**Arquivos SQL disponíveis:**
+
+| Arquivo | Finalidade |
+|---------|------------|
+| `function_app/sql/schema.sql` | Cria todas as tabelas e views para as 4 métricas DORA |
+| `function_app/sql/grant-permissions.sql` | Concede acesso ao Managed Identity do Function App |
+| `function_app/sql/verify-collection.sql` | Queries de verificação para todas as métricas |
+
 ---
 
 ## PARTE 4: Deploy das Azure Functions
@@ -309,7 +328,7 @@ sqlcmd -S ${SQL_SERVER_NAME}.database.windows.net \
 ### Passo 4.1: Prepare o Ambiente Local
 
 ```bash
-cd demos/frequency-deployment
+cd function_app
 
 # Crie virtual environment
 python -m venv .venv
@@ -657,6 +676,158 @@ O arquivo `.pbix` já contém:
 
 ---
 
+## Modelo de Dados do Power BI
+
+### Data Sources
+
+Conecte o Power BI ao Azure SQL Database:
+- Server: `${SQL_SERVER_NAME}.database.windows.net`
+- Database: `$SQL_DATABASE`
+- Authentication: Microsoft Entra ID (Azure Active Directory)
+
+Importe estas tabelas/views:
+- `deployments`
+- `pull_requests`
+- `incidents`
+- `vw_cfr_analysis` (dados pré-correlacionados de CFR)
+- `vw_lead_time_analysis` (dados pré-correlacionados de lead time)
+
+### Relacionamentos
+
+- `pull_requests[merge_commit_sha]` → `deployments[commit_sha]` (Many-to-One)
+- Não é necessário relacionamento físico entre `deployments` e `incidents` (correlacionados via DAX ou SQL view)
+
+### Medidas DAX
+
+#### Deployment Frequency
+```dax
+Daily Deployment Rate = 
+  DIVIDE(
+    COUNTROWS(deployments),
+    DISTINCTCOUNT(deployments[created_at].[Date]),
+    0
+  )
+```
+
+#### Lead Time for Changes
+```dax
+Median Lead Time (Hours) = 
+  DIVIDE(
+    PERCENTILE.INC(
+      SELECTCOLUMNS(
+        FILTER(vw_lead_time_analysis, vw_lead_time_analysis[deployment_id] <> BLANK()),
+        "LT", vw_lead_time_analysis[lead_time_minutes]
+      ),
+      [LT],
+      0.5
+    ),
+    60,
+    0
+  )
+
+Performance Level = 
+  VAR MedianHours = [Median Lead Time (Hours)]
+  RETURN SWITCH(
+    TRUE(),
+    MedianHours < 24, "Elite (<1 day)",
+    MedianHours < 168, "High (1-7 days)",
+    MedianHours < 720, "Medium (1 week-1 month)",
+    "Low (>1 month)"
+  )
+```
+
+#### Change Failure Rate
+```dax
+Deployments With Incidents = 
+  CALCULATE(
+    DISTINCTCOUNT(deployments[id]),
+    FILTER(
+      deployments,
+      CALCULATE(
+        COUNTROWS(
+          FILTER(
+            incidents,
+            incidents[repository] = deployments[repository]
+            && incidents[created_at] >= deployments[created_at]
+            && incidents[created_at] <= deployments[created_at] + 1
+          )
+        )
+      ) > 0
+    )
+  )
+
+Total Deployments = DISTINCTCOUNT(deployments[id])
+
+CFR % = DIVIDE([Deployments With Incidents], [Total Deployments], 0) * 100
+
+CFR Category = 
+  VAR CFRValue = [CFR %]
+  RETURN SWITCH(
+    TRUE(),
+    CFRValue <= 5, "Elite (0-5%)",
+    CFRValue <= 10, "High (5-10%)",
+    CFRValue <= 15, "Medium (10-15%)",
+    CFRValue > 15, "Low (>15%)",
+    "No Data"
+  )
+```
+
+#### Time to Restore Service
+```dax
+Median MTTR (Hours) = 
+  DIVIDE(
+    PERCENTILE.INC(
+      SELECTCOLUMNS(
+        FILTER(incidents, incidents[state] = "closed" && incidents[closed_at] <> BLANK()),
+        "MTTR", DATEDIFF(incidents[created_at], incidents[closed_at], MINUTE)
+      ),
+      [MTTR],
+      0.5
+    ),
+    60,
+    0
+  )
+```
+
+### Visualizações Recomendadas
+
+**Página 1: Executive Dashboard**
+- 4 KPI cards: Deployment Frequency, Lead Time, CFR %, MTTR
+- Indicador de nível de performance DORA por métrica
+- Linhas de tendência (semanal) para as 4 métricas
+
+**Página 2: Deployment Frequency**
+- Tendência de frequência de deploy (diário/semanal)
+- Deployments por repositório (gráfico de barras)
+- Deployments por environment (donut)
+- Taxa de sucesso vs falha
+
+**Página 3: Lead Time for Changes**
+- Tendência de lead time (mediana semanal)
+- Distribuição de lead time (histograma)
+- Lead time por repositório
+- Taxa de correlação PR-Deployment
+
+**Página 4: Change Failure Rate**
+- Tendência de CFR ao longo do tempo
+- CFR por repositório
+- CFR por produto (usando slicer `incidents[product]`)
+- Tabela de detalhes de incidents
+
+**Página 5: Time to Restore Service**
+- Tendência de MTTR ao longo do tempo
+- MTTR por repositório
+- Incidents abertos vs fechados
+- Timeline de resolução de incidents
+
+**Slicers (todas as páginas):**
+- Date range
+- Repository (multi-select)
+- Environment
+- Product (from incidents)
+
+---
+
 ## Personalizando o Dashboard
 
 Se quiser modificar o template:
@@ -810,10 +981,22 @@ Use estas referências para avaliar sua performance:
 
 ---
 
+## Estimativa de Custo
+
+| Recurso | Custo Estimado |
+|---------|----------------|
+| Function App (Consumption) | ~$0.50/mês (3 functions × intervalo de 5min) |
+| SQL Database (Serverless) | ~$5-10/mês |
+| Application Insights | ~$0-2/mês (5GB free tier) |
+| **Total** | **~$5-13/mês** |
+
+---
+
 ## Recursos Adicionais
 
-- **Documentação**: Veja READMEs em `demos/*/README.md`
-- **Schema Details**: Veja SQL files em `demos/*/sql/`
+- **Código fonte**: `function_app/function_app.py`
+- **SQL schemas**: `function_app/sql/`
+- **Issue template**: `function_app/github_templates/incident.yml`
 - **DORA Research**: https://dora.dev/
 - **GitHub Actions**: https://docs.github.com/en/actions
 - **Azure Functions**: https://learn.microsoft.com/azure/azure-functions/

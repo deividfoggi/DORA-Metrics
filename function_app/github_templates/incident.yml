@@ -1,0 +1,58 @@
+name: Incidente em produção após deployment
+description: Report a production incident (required for DORA metrics)
+title: "[INCIDENT] "
+labels:
+  - incident
+  - deployment
+  - production
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Incidente em produção após deployment
+        Esse incidente é obrigatório após a deteção de uma falha no ambiente de produção após um deployment.
+  
+  - type: input
+    id: incident_date
+    attributes:
+      label: Data e hora do incidente
+      description: "Quando o incidente ocorreu? (FORMATO: dd/mm/yyyy hh:mm)"
+      placeholder: "dd/mm/yyyy hh:mm"
+    validations:
+      required: true
+  
+  - type: textarea
+    id: incident_description
+    attributes:
+      label: Descrição do incidente
+      description: Descreva o incidente e qual o impacto?
+      placeholder: Descreva o incidente...
+    validations:
+      required: true
+  
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact
+      description: Qual é o impacto para os usuários?
+      placeholder: Descreva o impacto...
+    validations:
+      required: true
+
+  - type: input
+    id: incident_resolution_date
+    attributes:
+      label: Data e hora da RESOLUÇÃO incidente
+      description: "Quando o incidente foi solucionado? (FORMATO: dd/mm/yyyy hh:mm)"
+      placeholder: "dd/mm/yyyy hh:mm"
+    validations:
+      required: true
+      
+  - type: textarea
+    id: resolution_action
+    attributes:
+      label: Ação de resolução
+      description: Quais ações foram tomadas para a solução (deve ser preenchido após a solução ter sido validada)?
+      placeholder: Descreva as ações de solução...
+    validations:
+      required: false
