@@ -202,7 +202,7 @@ echo "Function App Managed Identity: $FUNCTION_IDENTITY"
 - **Metadata**: Read-only (automático)
 
 **Organization permissions:**
-- **Members**: Read-only (opcional)
+- **Members**: Read-only
 
 ### Passo 2.3: Crie e Salve
 
@@ -449,7 +449,7 @@ Crie labels nos repositórios:
    - `incident` (cor: vermelho)
    - `production` (cor: laranja)
 
-### Passo 5.3: Configure Issue Form para Incidents (opcional mas recomendado)
+### Passo 5.3: Configure Issue Form para Incidents
 
 Crie `.github/ISSUE_TEMPLATE/incident.yml`:
 
